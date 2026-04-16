@@ -12,12 +12,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { loadDraft, saveDraft } from "@/lib/lovefy-storage";
+import { uploadPhotosSecurely } from "@/lib/uploads/secure-photo-upload";
 import { simulatePhotoStorage } from "@/services/mocks/mock-storage-service";
 
 export default function CreatePage() {
   const router = useRouter();
   const [surprise, setSurprise] = useState<Surprise>(emptySurprise);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadFeedback, setUploadFeedback] = useState("");
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
@@ -54,9 +56,25 @@ export default function CreatePage() {
     if (!files?.length) return;
 
     setIsUploading(true);
-    const photos = await simulatePhotoStorage(Array.from(files));
-    setSurprise((current) => ({ ...current, photos: [...current.photos, ...photos].slice(0, 6) }));
-    setIsUploading(false);
+    setUploadFeedback("Preparando fotos...");
+
+    if (!isSupabaseUploadEnabled()) {
+      const photos = await simulatePhotoStorage(Array.from(files));
+      setUploadFeedback("Supabase ainda nao configurado. Usando preview local do prototipo.");
+      setSurprise((current) => ({ ...current, photos: [...current.photos, ...photos].slice(0, 6) }));
+      setIsUploading(false);
+      return;
+    }
+
+    try {
+      const photos = await uploadPhotosSecurely(Array.from(files));
+      setUploadFeedback("Fotos comprimidas em WebP e enviadas com URL assinada.");
+      setSurprise((current) => ({ ...current, photos: [...current.photos, ...photos].slice(0, 6) }));
+    } catch (error) {
+      setUploadFeedback(error instanceof Error ? error.message : "Nao foi possivel enviar as fotos.");
+    } finally {
+      setIsUploading(false);
+    }
   }
 
   function removePhoto(photo: Photo) {
@@ -89,7 +107,7 @@ export default function CreatePage() {
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
           <TabsContent value="editar" className="mt-5">
-            <Editor surprise={surprise} isUploading={isUploading} onChange={updateField} onPhotos={handlePhotos} onRemovePhoto={removePhoto} />
+            <Editor surprise={surprise} isUploading={isUploading} uploadFeedback={uploadFeedback} onChange={updateField} onPhotos={handlePhotos} onRemovePhoto={removePhoto} />
           </TabsContent>
           <TabsContent value="preview" className="mt-5">
             <LovePagePreview surprise={surprise} />
@@ -97,7 +115,7 @@ export default function CreatePage() {
         </Tabs>
 
         <div className="hidden gap-8 lg:grid lg:grid-cols-[minmax(0,1fr)_460px]">
-          <Editor surprise={surprise} isUploading={isUploading} onChange={updateField} onPhotos={handlePhotos} onRemovePhoto={removePhoto} />
+          <Editor surprise={surprise} isUploading={isUploading} uploadFeedback={uploadFeedback} onChange={updateField} onPhotos={handlePhotos} onRemovePhoto={removePhoto} />
           <div className="sticky top-6 h-fit">
             <LovePagePreview surprise={surprise} />
           </div>
@@ -107,15 +125,22 @@ export default function CreatePage() {
   );
 }
 
+function isSupabaseUploadEnabled() {
+  return Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  );
+}
+
 type EditorProps = {
   surprise: Surprise;
   isUploading: boolean;
+  uploadFeedback: string;
   onChange: <Key extends keyof Surprise>(key: Key, value: Surprise[Key]) => void;
   onPhotos: (files: FileList | null) => void;
   onRemovePhoto: (photo: Photo) => void;
 };
 
-function Editor({ surprise, isUploading, onChange, onPhotos, onRemovePhoto }: EditorProps) {
+function Editor({ surprise, isUploading, uploadFeedback, onChange, onPhotos, onRemovePhoto }: EditorProps) {
   function generate() {
     onChange("message", generateMessage(surprise.tone, surprise));
   }
@@ -181,12 +206,19 @@ function Editor({ surprise, isUploading, onChange, onPhotos, onRemovePhoto }: Ed
       <Card>
         <CardHeader>
           <CardTitle>Fotos e musica</CardTitle>
-          <CardDescription>As fotos ficam somente no navegador durante este prototipo.</CardDescription>
+          <CardDescription>
+            Em producao, as fotos sao comprimidas, validadas e enviadas por URL assinada.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Field label={isUploading ? "Preparando preview..." : "Adicionar fotos"}>
             <Input type="file" accept="image/*" multiple onChange={(event) => onPhotos(event.target.files)} />
           </Field>
+          {uploadFeedback ? (
+            <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+              {uploadFeedback}
+            </p>
+          ) : null}
           {surprise.photos.length ? (
             <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
               {surprise.photos.map((photo) => (
